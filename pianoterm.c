@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <wait.h>
 
+#define UINT16_MAX 65535
 #define _out STDOUT_FILENO
 #define _in STDIN_FILENO
 #define _err STDERR_FILENO
@@ -14,19 +15,19 @@
 #define _conf_path "/.config/pianoterm/config"
 #define _wlen(str) str, strlen(str)
 #define _wsize(str) str, sizeof(str)
-#define _wnext(c) while(*(c) == ' ') c++;
+#define _wstart(c)   while(*(c) == ' ') c++;
+#define _wend(c)     while(!(*c == ' ' || *c == 0 || *c== '#')) c++;
+#define _cmdend(c)   while(!(*c == 0 || *c== '#')) c++;
 
-const uint test_note = 21;
 const char *N_OFF = "Note off";
 const char *N_ON = "Note on";
 
 // first argument - midi port (24)
 // TODO: if no argument is passed try to find the port, using aconnect -i
-// TODO: add support for multiple commands (&&) and commands not in path $HOME/my_script.sh
-// TODO: config to run command if (note on vs note off) (press/release)
 // TODO: allow config to use standard notation and convert to key code (C#1 = "echo hello")
 // TODO: allow usage just by passing in arguments, without config file
 // TODO: option to reload config file?
+// TODO: option to set on_release/on_press per keybind
 //
 // alsactl (aseqdump) version 1.2.15.2
 //
@@ -63,15 +64,23 @@ void loadConfig(Data *app);
 
 int main(int argc, char**argv) {
     Data app;
-    app.port = 24;
     app.act_on_release = false;
 
-    if(argc == 2){
-        // if(strlen(argv[1]))
+    if(argc >= 2){
+        long int port = strtol(argv[1],NULL,10);
+        if(port <= 0 || port >= UINT16_MAX){
+            write(_out, _wlen("Invalid port\n"));
+            return 1;
+        }
+        app.port = (uint)port;
     }
 
-    if(argc <= 1){
-        // try to find port using aconnect -i
+    if(argc < 2){
+        // TODO: try to find port automatically using aconnect -i
+        write(_out, _wlen("Usage: "));
+        write(_out, _wlen(argv[0]));
+        write(_out, _wlen(" <port>\n"));
+        return 1;
     }
 
     char port_str[_port_digits];
@@ -185,40 +194,60 @@ void loadConfig(Data *app){
 
     UserCommand commands[l_count];
 
+    //TODO: break this up into functions
     for(l_cur = 0; l_cur < l_count; l_cur++){
         char *c = lines[l_cur];
-        _wnext(c);
+        _wstart(c);
         if(*c == '#' || *c == 0)
             continue;
+
+        //check for on_press/on_release keyword
+        {
+            char *w = c;
+            _wend(w);
+            int size = (int)(w-c);
+            if(size <= 0) continue;
+            char word[size + 1];
+            w = c;
+            for(int i = 0; i < size; i++)
+                word[i] = *(w++);
+            word[size] = 0;
+
+            if(strcmp(word, "on_press") == 0){
+                app->act_on_release = false;
+                continue;
+            }
+            if(strcmp(word, "on_release") == 0){
+                app->act_on_release = true;
+                continue;
+            }
+        }
 
         char *end;
         long int note = strtol(c, &end, 10);
         if(note == 0) continue;
         if(end) c = end;
 
-        _wnext(c);
+        _wstart(c);
         if(*c != '=') continue;
-        c++; _wnext(c);
+        c++; _wstart(c);
         if(*c == 0) continue;
 
-        int last = strlen(lines[l_cur]);
-        int cmd_len = (int)(&lines[l_cur][last] - c);
+        char *w = c;
+        _cmdend(w);
 
+        int cmd_len = (int)(w - c);
         if(app->n_commands == 0)
             app->commands = (UserCommand*)malloc(sizeof(UserCommand));
         else
             app->commands = (UserCommand*)realloc(app->commands, sizeof(UserCommand)*(app->n_commands + 1));
 
-        app->commands[app->n_commands].str = (char*) malloc(sizeof(char)*cmd_len);
+        app->commands[app->n_commands].str = (char*) malloc(sizeof(char)*(cmd_len+1));
         for(int i = 0; i < cmd_len; i++)
             app->commands[app->n_commands].str[i] = *(c++);
-        app->commands[app->n_commands].note = note;
 
-        //assert(*c == 0)
-        if(*c != 0){
-            write(_err, _wlen("panic - c should be 0\n"));
-            exit(-1);
-        }
+        app->commands[app->n_commands].str[cmd_len] = 0;
+        app->commands[app->n_commands].note = note;
 
         app->n_commands++;
     }
