@@ -1,13 +1,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <signal.h>
-#include <wait.h>
 #include <stdlib.h>
+#include <wait.h>
 
 #define OUT STDOUT_FILENO
 #define IN STDIN_FILENO
+#define ASEQ_HEADER_LEN 78
+#define ASEQ_LOG_LEN 58
 #define PORT_DIGITS 4
+#define CONF_PATH ".config/pianoterm/config"
 
 const uint test_note = 21;
 const char *N_OFF = "Note off";
@@ -18,6 +20,7 @@ const char *N_ON = "Note on";
 // TODO: add support for multiple commands (&&) and commands not in path $HOME/my_script.sh
 // TODO: config to run command if (note on vs note off) (press/release)
 // TODO: allow config to use standard notation and convert to key code (C#1 = "echo hello")
+// TODO: allow usage just by passing in arguments, without config file
 //
 // alsactl (aseqdump) version 1.2.15.2
 //
@@ -37,7 +40,7 @@ typedef struct user_command UserCommand;
 
 struct app_data {
     int channel[2];
-    char buffer[256];
+    char buffer[124];
     uint port;
     bool act_on_release;
     UserCommand *commands;
@@ -45,62 +48,75 @@ struct app_data {
 };
 typedef struct app_data Data;
 
-int readLine(Data *app);
+int readLine(Data *app, int len);
 int getNote(Data app);
 void runCommand(Data app, uint for_note);
-
-// get shell command from user command value
 ShellCommand *parseCommand(const char* src);
-
 void freeCommand(ShellCommand *cmd);
+void loadConfig(Data *app);
 
 int main(int argc, char**argv) {
     Data app;
     app.port = 24;
     app.act_on_release = false;
+    loadConfig(&app);
 
-    if(argc == 2)
-    {
+    if(argc == 2){
         // if(strlen(argv[1]))
     }
 
-    if(argc <= 1)
-    {
+    if(argc <= 1){
         // try to find port using aconnect -i
     }
 
-    if(pipe(app.channel) == -1)
-    {
+    if(pipe(app.channel) == -1){
         fprintf(stderr, "pipe error\n");
         return 1;
     };
 
     int pid = fork();
-    if(pid == -1)
-    {
+    if(pid == -1) {
         fprintf(stderr, "fork error\n");
         return 1;
     }
 
-    if(pid == 0)
-    {
+    if(pid == 0){
         close(app.channel[IN]);
         dup2(app.channel[OUT], OUT);
+        dup2(app.channel[OUT], STDERR_FILENO);
 
         char port_str[PORT_DIGITS];
-        sprintf(port_str, "%u\0", app.port);
+        sprintf(port_str, "%u", app.port);
 
         execlp("aseqdump", "aseqdump", "-p", port_str, 0);
         printf("_exit\n");
     } else {
-        while(1)
-        {
-            if(readLine(&app) == -1)
+        printf("Listening for MIDI input on port %u\n", app.port);
+        bool blocked = true;
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(app.channel[IN], &fds);
+
+        // ignore any lingering messages
+        struct timeval timeout = {.tv_sec = 0, .tv_usec = 100000};
+        int leftover_msgs = select(app.channel[IN] + 1, &fds, 0, 0, &timeout);
+        while(leftover_msgs){
+            readLine(&app, ASEQ_HEADER_LEN);
+            leftover_msgs = select(app.channel[IN] + 1, &fds, 0, 0, &timeout);
+            blocked = false;
+        }
+
+        while(1) {
+            if(blocked) { 
+                readLine(&app, ASEQ_HEADER_LEN);
+                blocked = false;
+            }
+
+            if(readLine(&app, ASEQ_LOG_LEN) == -1)
                 break;
 
             int note = getNote(app);
-            if(note)
-                runCommand(app, note);
+            if(note) runCommand(app, note);
 
         }
 
@@ -111,9 +127,25 @@ int main(int argc, char**argv) {
     return 0;
 }
 
-void runCommand(Data app, uint for_note){
-    printf("note: %u\n", for_note);
+void loadConfig(Data *app){
+    const char* home = getenv("HOME");
+    if(!home) {
+        fprintf(stderr, "$HOME variable not set\n");
+        return;
+    }
+    char path[strlen(home) + strlen(CONF_PATH)];
+    sprintf(path, "%s/%s", home, CONF_PATH);
 
+    FILE *f = fopen(path, "r");
+    if(!f) {
+        fprintf(stderr, "Config file not found at %s\n", path);
+        return;
+    }
+
+    fclose(f);
+}
+
+void runCommand(Data app, uint for_note){
     // 21 = notify-send 'hello'
     const char *test_cmd_0 = "notify-send hello";
     // 21 = notify-send hello
@@ -122,6 +154,7 @@ void runCommand(Data app, uint for_note){
     const char *test_cmd_2 = "  notify-send   hello goodbye ";
     // 21 = notify-send 'command 1' && notify-send 'command 2'!
     const char *test_cmd_3 = "notify-send 'command 1!' && notify-send 'command 2!'";
+    const char *test_cmd_4 = "/home/guts/.config/user/scripts/calendar.sh";
 
     const char *str = test_cmd_2;
 
@@ -203,7 +236,6 @@ mainloop: while(pos <= len){
     c->argv = tmp;
     c->argv[c->argc] = 0;
     c->path = c->argv[0];
-    //TODO: if path includes slashes, parse name argv[0] from path
 
     return c;
 }
@@ -217,16 +249,25 @@ void freeCommand(ShellCommand *cmd) {
 }
 
 // read line from aseqdump and update buffer
-int readLine(Data *app){
-    int bytes = read(app->channel[IN], app->buffer, 256);
+int readLine(Data *app, int len){
+    int bytes = read(app->channel[IN], app->buffer, len);
 
-    if(strncmp(app->buffer, "_exit", 5) == 0)
-    {
+    if(strncmp(app->buffer, "_exit", 5) == 0){
         fprintf(stderr, "could not find/start aseqdump\n");
         return -1;
     }
-    if(bytes == -1)
-    {
+
+    if(strstr(app->buffer, "Cannot connect") != 0){
+        fprintf(stderr, "Could not connect to port %d\n", app->port);
+        return -1;
+    }
+
+    if(strstr(app->buffer, "Port unsubscribed") != 0){
+        fprintf(stderr, "Lost connection to port %d\n", app->port);
+        return -1;
+    }
+
+    if(bytes == -1){
         fprintf(stderr, "read error\n");
         return -1;
     }
