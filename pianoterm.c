@@ -2,14 +2,18 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <fcntl.h>
 #include <wait.h>
 
-#define OUT STDOUT_FILENO
-#define IN STDIN_FILENO
-#define ASEQ_HEADER_LEN 78
-#define ASEQ_LOG_LEN 58
-#define PORT_DIGITS 4
-#define CONF_PATH ".config/pianoterm/config"
+#define _out STDOUT_FILENO
+#define _in STDIN_FILENO
+#define _err STDERR_FILENO
+#define _aseq_header_len 78
+#define _aseq_log_len 58
+#define _port_digits 4
+#define _conf_path ".config/pianoterm/config"
+#define _wsize(str) str, strlen(str)
+    
 
 const uint test_note = 21;
 const char *N_OFF = "Note off";
@@ -59,7 +63,6 @@ int main(int argc, char**argv) {
     Data app;
     app.port = 24;
     app.act_on_release = false;
-    loadConfig(&app);
 
     if(argc == 2){
         // if(strlen(argv[1]))
@@ -69,55 +72,58 @@ int main(int argc, char**argv) {
         // try to find port using aconnect -i
     }
 
+    char port_str[_port_digits];
+    snprintf(port_str, _port_digits, "%u", app.port);
+
+    loadConfig(&app);
     if(pipe(app.channel) == -1){
-        fprintf(stderr, "pipe error\n");
+        write(_err, _wsize("pipe error\n"));
         return 1;
     };
 
     int pid = fork();
     if(pid == -1) {
-        fprintf(stderr, "fork error\n");
+        write(_err, _wsize("fork error\n"));
         return 1;
     }
 
     if(pid == 0){
-        close(app.channel[IN]);
-        dup2(app.channel[OUT], OUT);
-        dup2(app.channel[OUT], STDERR_FILENO);
-
-        char port_str[PORT_DIGITS];
-        sprintf(port_str, "%u", app.port);
+        close(app.channel[_in]);
+        dup2(app.channel[_out], _out);
+        dup2(app.channel[_out], _err);
 
         execlp("aseqdump", "aseqdump", "-p", port_str, 0);
-        printf("_exit\n");
+        write(_out, _wsize("_exit\n"));
     } else {
-        printf("Listening for MIDI input on port %u\n", app.port);
+        write(_out, _wsize("Listening for MIDI input on port "));
+        write(_out, _wsize(port_str));
+        write(_out, _wsize("\n"));
+
         bool blocked = true;
         fd_set fds;
         FD_ZERO(&fds);
-        FD_SET(app.channel[IN], &fds);
+        FD_SET(app.channel[_in], &fds);
 
         // ignore any lingering messages
         struct timeval timeout = {.tv_sec = 0, .tv_usec = 100000};
-        int leftover_msgs = select(app.channel[IN] + 1, &fds, 0, 0, &timeout);
+        int leftover_msgs = select(app.channel[_in] + 1, &fds, 0, 0, &timeout);
         while(leftover_msgs){
-            readLine(&app, ASEQ_HEADER_LEN);
-            leftover_msgs = select(app.channel[IN] + 1, &fds, 0, 0, &timeout);
+            readLine(&app, _aseq_header_len);
+            leftover_msgs = select(app.channel[_in] + 1, &fds, 0, 0, &timeout);
             blocked = false;
         }
 
         while(1) {
             if(blocked) { 
-                readLine(&app, ASEQ_HEADER_LEN);
+                readLine(&app, _aseq_header_len);
                 blocked = false;
             }
 
-            if(readLine(&app, ASEQ_LOG_LEN) == -1)
+            if(readLine(&app, _aseq_log_len) == -1)
                 break;
 
             int note = getNote(app);
             if(note) runCommand(app, note);
-
         }
 
         kill(pid, SIGKILL);
@@ -130,19 +136,27 @@ int main(int argc, char**argv) {
 void loadConfig(Data *app){
     const char* home = getenv("HOME");
     if(!home) {
-        fprintf(stderr, "$HOME variable not set\n");
-        return;
-    }
-    char path[strlen(home) + strlen(CONF_PATH)];
-    sprintf(path, "%s/%s", home, CONF_PATH);
-
-    FILE *f = fopen(path, "r");
-    if(!f) {
-        fprintf(stderr, "Config file not found at %s\n", path);
+        write(_err, _wsize("$HOME variable not set\n"));
         return;
     }
 
-    fclose(f);
+    char path[strlen(home) + strlen(_conf_path)];
+    snprintf(path, strlen(path),"%s/%s", home, _conf_path);
+
+    int fd = open(path, O_RDONLY);
+    if(fd == -1) {
+        write(_err, _wsize("Config file not found: "));
+        write(_err, _wsize(path));
+        write(_err, _wsize("\n"));
+        return;
+    }
+
+    char buf;
+    while(read(fd, &buf, 1) > 0){
+       write(_out, &buf, 1);
+    }
+
+    close(fd);
 }
 
 void runCommand(Data app, uint for_note){
@@ -220,7 +234,7 @@ mainloop: while(pos <= len){
     }
 
     if(in_quote){
-        fprintf(stderr, "command syntax error: unclosed quote\n");
+        write(_err, _wsize("command syntax error: unclosed quote\n"));
         freeCommand(c);
         return 0;
     }
@@ -250,25 +264,25 @@ void freeCommand(ShellCommand *cmd) {
 
 // read line from aseqdump and update buffer
 int readLine(Data *app, int len){
-    int bytes = read(app->channel[IN], app->buffer, len);
+    int bytes = read(app->channel[_in], app->buffer, len);
 
     if(strncmp(app->buffer, "_exit", 5) == 0){
-        fprintf(stderr, "could not find/start aseqdump\n");
+        write(_err, _wsize("could not find/start aseqdump\n"));
         return -1;
     }
 
     if(strstr(app->buffer, "Cannot connect") != 0){
-        fprintf(stderr, "Could not connect to port %d\n", app->port);
+        write(_err, _wsize("Could not connect to port\n"));
         return -1;
     }
 
     if(strstr(app->buffer, "Port unsubscribed") != 0){
-        fprintf(stderr, "Lost connection to port %d\n", app->port);
+        write(_err, _wsize("Lost connection to port %d\n"));
         return -1;
     }
 
     if(bytes == -1){
-        fprintf(stderr, "read error\n");
+        write(_err, _wsize("read error\n"));
         return -1;
     }
     app->buffer[bytes] = 0;
