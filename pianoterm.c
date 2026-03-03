@@ -24,17 +24,27 @@ const char *N_ON = "Note on";
 
 // first argument - midi port (24)
 // TODO: support for repeating command while holding down key
+//
+// TODO: chord on_press support (store multiple notes in a cmd)
+// define a limit (10 for 10 fingers)
+// change user_cmd to store an array of notes (can be static, since only 10)
+// read the next 10 lines, instead of one-by-one, check if 'note on' matches notes in cmd (for n lines in cmd)
+// also figure out syntax for config file
+//
 // TODO: if no argument is passed try to find the port, using aconnect -i
 // TODO: allow config to use standard notation and convert to key code (C#1 = "echo hello")
 // TODO: option to reload config file?
-// TODO: option to set on_release/on_press per keybind
 // TODO: check if instance already running on the same port
 // TODO: reconnect automatically on disconnect/connect
 //
 // alsactl (aseqdump) version 1.2.15.2
 //
 
-enum trigger { on_press, on_release, on_hold };
+enum trigger {
+    on_press,
+    on_release,
+    on_hold,
+};
 typedef enum trigger Trigger;
 
 struct shell_command {
@@ -45,11 +55,17 @@ struct shell_command {
 typedef struct shell_command ShellCommand;
 
 struct user_command {
-    uint note;
+    uint note; // uint note[10]; uint n_notes;
     Trigger trigger;
     char *str;
 };
 typedef struct user_command UserCommand;
+
+struct midi_event {
+    uint note;
+    Trigger trigger;
+};
+typedef struct midi_event MidiEvent;
 
 struct app_data {
     int channel[2];
@@ -62,8 +78,8 @@ struct app_data {
 typedef struct app_data Data;
 
 int readLine(Data *app, int len);
-int getNote(Data app);
-void runCommand(Data app, uint for_note);
+MidiEvent getEvent(Data app);
+void runCommand(Data app, MidiEvent e);
 ShellCommand *parseCommand(char* src);
 void freeCommand(ShellCommand *cmd);
 void loadConfig(Data *app);
@@ -125,23 +141,32 @@ int main(int argc, char**argv) {
         // ignore any lingering messages
         struct timeval timeout = {.tv_sec = 0, .tv_usec = 100000};
         int leftover_msgs = select(app.channel[_in] + 1, &fds, 0, 0, &timeout);
-        while(leftover_msgs){
+        while(leftover_msgs) {
             readLine(&app, _aseq_header_len);
             leftover_msgs = select(app.channel[_in] + 1, &fds, 0, 0, &timeout);
             blocked = false;
         }
 
         while(1) {
-            if(blocked) { 
+            if(blocked) {
                 readLine(&app, _aseq_header_len);
                 blocked = false;
             }
 
-            if(readLine(&app, _aseq_log_len) == -1)
+            int res = readLine(&app, _aseq_log_len);
+            if(res == -1) // error
                 break;
+            if(res == 0) // ignore
+                continue;
 
-            int note = getNote(app);
-            if(note) runCommand(app, note);
+            MidiEvent event = getEvent(app);
+            if(event.note == -1) {
+                //TODO: handle error
+                continue;
+            }
+            // printf("note: %d trigger: %d\n", event.note, event.trigger);
+            runCommand(app, event);
+            //if(note) runCommand(app, note);
         }
 
         kill(pid, SIGKILL);
@@ -272,9 +297,10 @@ void loadConfig(Data *app){
     close(fd);
 }
 
-void runCommand(Data app, uint for_note){
+void runCommand(Data app, MidiEvent e){
     for(int i = 0; i < app.n_commands; i++){
-        if(for_note != app.commands[i].note) continue;
+        if(!(app.commands[i].note == e.note && app.commands[i].trigger == e.trigger))
+            continue;
 
         ShellCommand *c = parseCommand(app.commands[i].str);
         if(c){
@@ -339,8 +365,17 @@ void freeCommand(ShellCommand *cmd) {
 }
 
 // read line from aseqdump and update buffer
+// return values:
+// (-1) error
+// (0) ignore, wrong format
+// (1) ok, expected format
 int readLine(Data *app, int len){
     int bytes = read(app->channel[_in], app->buffer, len);
+    if(bytes == -1){
+        write(_err, _wlen("read error\n"));
+        return -1;
+    }
+    app->buffer[bytes] = 0;
 
     if(strncmp(app->buffer, "_exit", 5) == 0){
         write(_err, _wlen("could not find/start aseqdump\n"));
@@ -357,44 +392,36 @@ int readLine(Data *app, int len){
         return -1;
     }
 
-    if(bytes == -1){
-        write(_err, _wlen("read error\n"));
-        return -1;
-    }
-    app->buffer[bytes] = 0;
+    uint port = 0;
+    int n = sscanf(app->buffer, "%3u:", &port);
+    if(!(n == 1 && port == app->port)) // wrong format
+        return 0;
 
-    return 0;
+    return 1;
 }
 
-// return the code of the key pressed (0 if no note)
-int getNote(Data app){
-    uint note = 0, port = 0;
-    int n;
+MidiEvent getEvent(Data app) {
+    MidiEvent e;
+    e.trigger = on_press;
+    e.note = 0;
 
-    n = sscanf(app.buffer, "%3u:", &port);
-    if(n != 1 || port != app.port) return 0;
-
-    const char *trigger;
-    switch(app.trigger_state){
-        case on_hold:
-        case on_press:
-            trigger = N_ON;
-            break;
-        case on_release:
-            trigger = N_ON;
-            break;
-    }
-
-    //TODO: refactor this logic to allow per note keybind and on hold
-    if(strstr(app.buffer, trigger) == NULL) return 0;
+    if(strstr(app.buffer, N_ON))
+        e.trigger = on_press;
+    else if(strstr(app.buffer, N_OFF))
+        e.trigger = on_release;
 
     char *note_pos = strstr(app.buffer, "note ");
-    if(!note_pos) return 0;
+    if(!note_pos)
+        goto err_unexpected_format;
+    if(sscanf(note_pos, "note %3u,", &e.note) != 1)
+        goto err_unexpected_format;
 
-    n = sscanf(note_pos, "note %3u,", &note);
-    if(n != 1) return 0;
+    return e;
 
-    return note;
+// should not trigger, unless aseqdump format changes
+err_unexpected_format:
+    e.note = -1;
+    return e;
 }
 
 // can I turn this into a macro?
