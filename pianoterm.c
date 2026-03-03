@@ -23,14 +23,19 @@ const char *N_OFF = "Note off";
 const char *N_ON = "Note on";
 
 // first argument - midi port (24)
+// TODO: support for repeating command while holding down key
 // TODO: if no argument is passed try to find the port, using aconnect -i
 // TODO: allow config to use standard notation and convert to key code (C#1 = "echo hello")
-// TODO: allow usage just by passing in arguments, without config file
 // TODO: option to reload config file?
 // TODO: option to set on_release/on_press per keybind
+// TODO: check if instance already running on the same port
+// TODO: reconnect automatically on disconnect/connect
 //
 // alsactl (aseqdump) version 1.2.15.2
 //
+
+enum trigger { on_press, on_release, on_hold };
+typedef enum trigger Trigger;
 
 struct shell_command {
     char *path;
@@ -41,6 +46,7 @@ typedef struct shell_command ShellCommand;
 
 struct user_command {
     uint note;
+    Trigger trigger;
     char *str;
 };
 typedef struct user_command UserCommand;
@@ -49,7 +55,7 @@ struct app_data {
     int channel[2];
     char buffer[124];
     uint port;
-    bool act_on_release;
+    Trigger trigger_state;
     UserCommand *commands;
     uint n_commands;
 };
@@ -58,13 +64,14 @@ typedef struct app_data Data;
 int readLine(Data *app, int len);
 int getNote(Data app);
 void runCommand(Data app, uint for_note);
-ShellCommand *parseCommand(const char* src);
+ShellCommand *parseCommand(char* src);
 void freeCommand(ShellCommand *cmd);
 void loadConfig(Data *app);
+char* seekToNext(char* cur, char target);
 
 int main(int argc, char**argv) {
     Data app;
-    app.act_on_release = false;
+    app.trigger_state = on_press;
 
     if(argc >= 2){
         long int port = strtol(argv[1],NULL,10);
@@ -192,8 +199,6 @@ void loadConfig(Data *app){
        l_cur++;
     }
 
-    UserCommand commands[l_count];
-
     //TODO: break this up into functions
     for(l_cur = 0; l_cur < l_count; l_cur++){
         char *c = lines[l_cur];
@@ -201,7 +206,7 @@ void loadConfig(Data *app){
         if(*c == '#' || *c == 0)
             continue;
 
-        //check for on_press/on_release keyword
+        // check for on_press/on_release keyword
         {
             char *w = c;
             _wend(w);
@@ -214,11 +219,16 @@ void loadConfig(Data *app){
             word[size] = 0;
 
             if(strcmp(word, "on_press") == 0){
-                app->act_on_release = false;
+                app->trigger_state = on_press;
                 continue;
             }
             if(strcmp(word, "on_release") == 0){
-                app->act_on_release = true;
+                app->trigger_state = on_release;
+                continue;
+            }
+            if(strcmp(word, "on_hold") == 0){
+                // TODO: make this work
+                app->trigger_state = on_hold;
                 continue;
             }
         }
@@ -230,6 +240,7 @@ void loadConfig(Data *app){
 
         _wstart(c);
         if(*c != '=') continue;
+
         c++; _wstart(c);
         if(*c == 0) continue;
 
@@ -237,6 +248,8 @@ void loadConfig(Data *app){
         _cmdend(w);
 
         int cmd_len = (int)(w - c);
+        if(cmd_len <= 0) continue;
+
         if(app->n_commands == 0)
             app->commands = (UserCommand*)malloc(sizeof(UserCommand));
         else
@@ -248,6 +261,7 @@ void loadConfig(Data *app){
 
         app->commands[app->n_commands].str[cmd_len] = 0;
         app->commands[app->n_commands].note = note;
+        app->commands[app->n_commands].trigger = app->trigger_state;
 
         app->n_commands++;
     }
@@ -259,83 +273,61 @@ void loadConfig(Data *app){
 }
 
 void runCommand(Data app, uint for_note){
-    for(int i = 0; i < app.n_commands; i++)
-    {
+    for(int i = 0; i < app.n_commands; i++){
         if(for_note != app.commands[i].note) continue;
 
         ShellCommand *c = parseCommand(app.commands[i].str);
         if(c){
-            int pid = fork();
-            if(pid == 0)
+            if(fork() == 0){
                 execvp(c->path, c->argv);
-            else
-                waitpid(pid, 0, 0);
+                exit(0);
+            }
 
             freeCommand(c);
         };
     }
 }
 
-ShellCommand* parseCommand(const char* src){
+//separate cmd string into multiple args
+ShellCommand* parseCommand(char* src){
     ShellCommand *c = (ShellCommand*) malloc(sizeof(ShellCommand));
     c->argv = 0;
     c->path = 0;
-    uint len = strlen(src);
-    bool in_quote = false;
-    uint pos = 0;
 
-    while(src[pos] == ' ') pos++;
-    uint word_start = pos;
-mainloop: while(pos <= len){
-       if(src[pos] == '\'') in_quote = !in_quote;
-       if(in_quote) { pos++; continue; };
+    char *cur = src;
+    while(*cur != 0){
+        _wstart(cur);
+        const char* start = cur;
+        if(*start == '\"' || *start == '\''){
+            cur++; cur = seekToNext(cur, *start);
+            if(*cur == 0) goto err_unclosed;
+        }
+        _wend(cur);
 
-       if(src[pos] == ' ' || pos == len){
-           uint word_size = pos - word_start + 1;
-           char *new_word = (char*)malloc(sizeof(char)*word_size);
-           snprintf(new_word, word_size, "%s", &src[word_start]);
+        int len = (int)(cur - start);
+        if(c->argc == 0)
+            c->argv = malloc(sizeof(char*));
+        else
+            c->argv = realloc(c->argv, sizeof(char*) * (c->argc + 1));
 
-           char **tmp = (char**)malloc((c->argc + 1)* sizeof(char*));
-           for(int i = 0; i < c->argc; i++)
-               tmp[i] = c->argv[i];
-
-           if(c->argv)
-               free(c->argv);
-
-           c->argv = tmp;
-           c->argv[c->argc] = new_word;
-           c->argc++;
-
-           while(src[pos] == ' ' || src[pos] == 0){
-               pos++; 
-               if(pos >= len) break mainloop;
-           }
-           word_start = pos;
-           continue;
-       }
-
-       pos++;
+        c->argv[c->argc] = malloc(sizeof(char) * (len + 1));
+        snprintf(c->argv[c->argc], len + 1, "%s", start);
+        c->argv[c->argc][len] = 0;
+        c->argc++;
     }
-
-    if(in_quote){
-        write(_err, _wlen("command syntax error: unclosed quote\n"));
-        freeCommand(c);
-        return 0;
-    }
+    if(c->argc == 0) return 0;
 
     // prepare for execvp
-    char **tmp = (char**)malloc((c->argc + 1)* sizeof(char*));
-    for(int i = 0; i < c->argc; i++)
-        tmp[i] = c->argv[i];
-
-    if(c->argv)
-        free(c->argv);
-
-    c->argv = tmp;
+    c->argv = realloc(c->argv, (c->argc + 1) * sizeof(char*));
     c->argv[c->argc] = 0;
     c->path = c->argv[0];
 
     return c;
+
+err_unclosed:
+    write(_err, _wlen("command syntax error: unclosed quote\n"));
+    freeCommand(c);
+    return 0;
 }
 
 void freeCommand(ShellCommand *cmd) {
@@ -382,7 +374,18 @@ int getNote(Data app){
     n = sscanf(app.buffer, "%3u:", &port);
     if(n != 1 || port != app.port) return 0;
 
-    const char *trigger = app.act_on_release ? N_OFF : N_ON;
+    const char *trigger;
+    switch(app.trigger_state){
+        case on_hold:
+        case on_press:
+            trigger = N_ON;
+            break;
+        case on_release:
+            trigger = N_ON;
+            break;
+    }
+
+    //TODO: refactor this logic to allow per note keybind and on hold
     if(strstr(app.buffer, trigger) == NULL) return 0;
 
     char *note_pos = strstr(app.buffer, "note ");
@@ -393,3 +396,10 @@ int getNote(Data app){
 
     return note;
 }
+
+// can I turn this into a macro?
+char* seekToNext(char* cur, char target){
+    while(!(*cur == target || *cur == 0)) cur++;
+    return cur;
+};
+
