@@ -12,9 +12,10 @@
 #define _aseq_header_len 78
 #define _aseq_log_len 58
 #define _port_digits 4
+#define _repeat_delay 100000
 #define _conf_path "/.config/pianoterm/config"
-#define _wlen(str) str, strlen(str)
-#define _wsize(str) str, sizeof(str)
+#define _wlen(str)   str, strlen(str)
+#define _wsize(str)  str, sizeof(str)
 #define _wstart(c)   while(*(c) == ' ') c++;
 #define _wend(c)     while(!(*c == ' ' || *c == 0 || *c== '#')) c++;
 #define _cmdend(c)   while(!(*c == 0 || *c== '#')) c++;
@@ -22,9 +23,7 @@
 const char *N_OFF = "Note off";
 const char *N_ON = "Note on";
 
-// first argument - midi port (24)
-// TODO: support for repeating command while holding down key
-//
+// TODO: reconnect automatically on disconnect/connect
 // TODO: chord on_press support (store multiple notes in a cmd)
 // define a limit (10 for 10 fingers)
 // change user_cmd to store an array of notes (can be static, since only 10)
@@ -35,10 +34,8 @@ const char *N_ON = "Note on";
 // TODO: allow config to use standard notation and convert to key code (C#1 = "echo hello")
 // TODO: option to reload config file?
 // TODO: check if instance already running on the same port
-// TODO: reconnect automatically on disconnect/connect
 //
 // alsactl (aseqdump) version 1.2.15.2
-//
 
 enum trigger {
     on_press,
@@ -58,6 +55,7 @@ struct user_command {
     uint note; // uint note[10]; uint n_notes;
     Trigger trigger;
     char *str;
+    int pid;
 };
 typedef struct user_command UserCommand;
 
@@ -79,7 +77,7 @@ typedef struct app_data Data;
 
 int readLine(Data *app, int len);
 MidiEvent getEvent(Data app);
-void runCommand(Data app, MidiEvent e);
+void runCommand(Data *app, MidiEvent e);
 ShellCommand *parseCommand(char* src);
 void freeCommand(ShellCommand *cmd);
 void loadConfig(Data *app);
@@ -164,9 +162,7 @@ int main(int argc, char**argv) {
                 //TODO: handle error
                 continue;
             }
-            // printf("note: %d trigger: %d\n", event.note, event.trigger);
-            runCommand(app, event);
-            //if(note) runCommand(app, note);
+            runCommand(&app, event);
         }
 
         kill(pid, SIGKILL);
@@ -252,7 +248,6 @@ void loadConfig(Data *app){
                 continue;
             }
             if(strcmp(word, "on_hold") == 0){
-                // TODO: make this work
                 app->trigger_state = on_hold;
                 continue;
             }
@@ -287,6 +282,7 @@ void loadConfig(Data *app){
         app->commands[app->n_commands].str[cmd_len] = 0;
         app->commands[app->n_commands].note = note;
         app->commands[app->n_commands].trigger = app->trigger_state;
+        app->commands[app->n_commands].pid = -1;
 
         app->n_commands++;
     }
@@ -297,16 +293,48 @@ void loadConfig(Data *app){
     close(fd);
 }
 
-void runCommand(Data app, MidiEvent e){
-    for(int i = 0; i < app.n_commands; i++){
-        if(!(app.commands[i].note == e.note && app.commands[i].trigger == e.trigger))
+void runCommand(Data *app, MidiEvent e){
+    for(int i = 0; i < app->n_commands; i++){
+        if(app->commands[i].note != e.note)
             continue;
 
-        ShellCommand *c = parseCommand(app.commands[i].str);
+        Trigger t = app->commands[i].trigger;
+        if(t != on_hold && t != e.trigger)
+            continue;
+
+        ShellCommand *c = parseCommand(app->commands[i].str);
         if(c){
-            if(fork() == 0){
-                execvp(c->path, c->argv);
-                exit(0);
+            if(t == on_press || t == on_release){
+                if(fork() == 0){
+                    execvp(c->path, c->argv);
+                    exit(0);
+                }
+            } else if(t == on_hold){
+                if(e.trigger == on_press) {
+                    if(app->commands[i].pid > 0){
+                        kill(app->commands[i].pid, SIGKILL);
+                        waitpid(app->commands[i].pid, NULL, 0);
+                    }
+
+                    int pid = fork();
+                    if(pid == 0) { // repeating process
+                        while(true) {
+                            if(fork() == 0) {
+                                execvp(c->path, c->argv);
+                                exit(0);
+                            }
+                            usleep(_repeat_delay);
+                        }
+                    }
+                    app->commands[i].pid = pid;
+                }
+                if(e.trigger == on_release) {
+                    if(app->commands[i].pid > 0){
+                        kill(app->commands[i].pid, SIGKILL);
+                        waitpid(app->commands[i].pid, NULL, 0);
+                    }
+                    app->commands[i].pid = -1;
+                }
             }
 
             freeCommand(c);
@@ -388,13 +416,13 @@ int readLine(Data *app, int len){
     }
 
     if(strstr(app->buffer, "Port unsubscribed") != 0){
-        write(_err, _wlen("Lost connection to port %d\n"));
+        write(_err, _wlen("Lost connection to port\n"));
         return -1;
     }
 
     uint port = 0;
     int n = sscanf(app->buffer, "%3u:", &port);
-    if(!(n == 1 && port == app->port)) // wrong format
+    if(!(n == 1 && port == app->port))
         return 0;
 
     return 1;
@@ -402,13 +430,13 @@ int readLine(Data *app, int len){
 
 MidiEvent getEvent(Data app) {
     MidiEvent e;
-    e.trigger = on_press;
-    e.note = 0;
 
     if(strstr(app.buffer, N_ON))
         e.trigger = on_press;
     else if(strstr(app.buffer, N_OFF))
         e.trigger = on_release;
+    else 
+        goto err_unexpected_format;
 
     char *note_pos = strstr(app.buffer, "note ");
     if(!note_pos)
@@ -429,4 +457,3 @@ char* seekToNext(char* cur, char target){
     while(!(*cur == target || *cur == 0)) cur++;
     return cur;
 };
-
