@@ -25,7 +25,13 @@ Assumes ALSA is used as the soundcard driver, you can use acconnect -i to find t
 # Syntax: port = command
 # Use aseqdump -p <port> to find specific keycodes
 
-# Example
+# Examples
+
+## Control audio playback
+on_press
+21 = playerctl previous # first key on an 88-key keyboard
+22 = playerctl play-pause
+23 = playerctl next
 
 ## Map directly to keyboard keys
 on_press
@@ -34,12 +40,6 @@ on_press
 on_release
 107 = ydotool key 108:0
 108 = ydotool key 103:0
-
-## Control audio playback
-on_press
-21 = playerctl previous # first key on an 88-key keyboard
-22 = playerctl play-pause
-23 = playerctl next
 
 ## Run custom scripts
 69 = /home/me/my_script.sh
