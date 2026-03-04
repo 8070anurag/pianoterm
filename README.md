@@ -21,28 +21,30 @@ Assumes ALSA is used as the soundcard driver, you can use acconnect -i to find t
 ```conf
 # This is a comment
 #
-# Trigger can be on_release or on_press for each keybind (on_hold in development)
+# Triggers: [on_release|on_press|on_hold]
 # Syntax: port = command
 # Use aseqdump -p <port> to find specific keycodes
 
 # Example
 
+## Map directly to keyboard keys
+on_press
+107 = ydotool key 108:1
+108 = ydotool key 103:1
+on_release
+107 = ydotool key 108:0
+108 = ydotool key 103:0
+
+## Control audio playback
 on_press
 21 = playerctl previous # first key on an 88-key keyboard
 22 = playerctl play-pause
 23 = playerctl next
-108 = /home/me/my_script.sh
 
-## You can assign multiple commands to the same key
+## Run custom scripts
+69 = /home/me/my_script.sh
 
-### On different triggers
-on_press
-60 = notify-send "Middle C pressed"
-on_release
-60 = notify-send "Middle C released"
-
-### Or on the same trigger
-on_press
+## Assign multiple commands to run sequentially on the same key press
 60 = notify-send "command 1"
 60 = notify-send "command 2"
 ```
