@@ -202,8 +202,8 @@ void loadConfig(Data *app){
 
     int fd = open(path, O_RDONLY);
     if(fd == -1) { return; }
-    write(_out, _wlen("Loding config: "));
-    write(_out, _wlen(_conf_path));
+    write(_out, _wlen("Loading config: "));
+    write(_out, _wlen(path));
     write(_out, _wlen("\n"));
 
     char b;

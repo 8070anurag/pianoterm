@@ -4,7 +4,7 @@ Run shell commands from your piano
 
 ## Description
 
-Linux CLI tool to assign shell commands to keys on a USB MIDI Keyboard
+Linux CLI tool to assign shell commands to keys or knobs on a USB MIDI Keyboard/Controller
 
 ## Usage
 
@@ -12,20 +12,16 @@ Linux CLI tool to assign shell commands to keys on a USB MIDI Keyboard
 pianoterm <port>
 ```
 
-Note:
-Assumes ALSA is used as the soundcard driver, you can use acconnect -i to find the desired midi port.
+Note: Assumes ALSA is used as the soundcard driver, you can use acconnect -i to find the desired midi port.
 
 ## Configuration
 
-- $HOME/.config/pianoterm/config
-```conf
-# This is a comment
-#
-# Triggers: [on_release|on_press|on_hold]
-# Syntax: key = command
-# Use aseqdump -p <port> to find specific keycodes
+- path: $HOME/.config/pianoterm/config
 
-# Examples
+### Example Config
+
+```conf
+# $HOME/.config/pianoterm/config
 
 ## Control audio playback
 on_press
@@ -33,13 +29,17 @@ on_press
 22 = playerctl play-pause
 23 = playerctl next
 
-## Map directly to keyboard keys
+## Map directly to keyboard keys (Wayland)
 on_press
 107 = ydotool key 108:1
 108 = ydotool key 103:1
 on_release
 107 = ydotool key 108:0
 108 = ydotool key 103:0
+
+## Map controller events
+64 (127) = notify-send "Pressed pedal" # 127 in this case is the maximum value the pedal outputs
+64 (0)   = notify-send "Released pedal"
 
 ## Run custom scripts
 69 = /home/me/my_script.sh
@@ -49,7 +49,30 @@ on_release
 60 = notify-send "command 2"
 ```
 
+### Syntax Explanation
+
+- Keys and buttons:
+```conf
+# Default - on_press
+[on_press|on_release|on_hold]
+
+key = command
+```
+
+- Controllers (pedals, knobs, etc.):
+```conf
+# Must include a trigger value
+# A trigger is numeric value greater than 0. (usually the pressure on a pedal, the volume on a knob, etc.)
+
+key (trigger) = command
+```
+
+Notes:
+- A different key and controller can share the same key.
+- You can use aseqdump -p <port> to find keycodes and controller values.
+
 ## Building
+
 ```bash
 git clone https://github.com/vustagc/pianoterm.git
 cd pianoterm && make
