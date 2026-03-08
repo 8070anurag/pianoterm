@@ -14,7 +14,8 @@ pianoterm <port>
 
 Note: 
 - It will keep trying to connect until it finds the port, use ctrl+c to stop it
-- Assumes ALSA is used as the soundcard driver, you can use acconnect -i to find the desired midi port.
+- You must have aconnect and aseqdump in your path
+- You can use 'acconect -i' to find the port
 
 ## Configuration
 
