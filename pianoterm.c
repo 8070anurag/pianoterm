@@ -8,7 +8,7 @@
 
 #define _conf_path "/.config/pianoterm/config"
 #define _retry_connection_secs 60
-#define _on_hold_repeat_delay 100000
+#define _on_hold_repeat_delay_ms 100
 #define _port_digits 4
 
 #define UINT16_MAX 65535
@@ -369,31 +369,37 @@ void runCommand(Data *app, MidiEvent e) {
 
       } else if (t == on_hold) {
         if (e.note_trigger == on_press) {
-          if (app->commands[i].pid > 0) {
-            kill(app->commands[i].pid, SIGKILL);
-            waitpid(app->commands[i].pid, NULL, 0);
-          }
+          printf("Press\n");
+          // if (app->commands[i].pid > 0) {
+          //   kill(app->commands[i].pid, SIGKILL);
+          //   waitpid(app->commands[i].pid, NULL, 0);
+          // }
 
           int pid = fork();
-          if (pid == 0) { // repeating process
+          if (pid == 0) {
             // this should prob be a thread instead
             while (true) {
               int c_pid = fork();
-              if (c_pid) {
+              if (c_pid == -1)
+                break;
+              if (c_pid == 0) {
                 execvp(c->path, c->argv);
                 exit(0);
               } else {
                 waitpid(c_pid, 0, 0);
               }
-              usleep(_on_hold_repeat_delay);
+              usleep(_on_hold_repeat_delay_ms * 1000);
             }
+            exit(0);
           }
           app->commands[i].pid = pid;
         }
+
         if (e.note_trigger == on_release) {
           if (app->commands[i].pid > 0) {
+            printf("Released\n");
             kill(app->commands[i].pid, SIGKILL);
-            waitpid(app->commands[i].pid, NULL, 0);
+            waitpid(app->commands[i].pid, 0, 0);
           }
           app->commands[i].pid = -1;
         }
